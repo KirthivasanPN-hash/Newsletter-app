@@ -42,5 +42,25 @@ class Newsletter(NewsletterBase):
     updated_at: datetime
     template: Optional[Template] = None
 
+class UserBase(BaseModel):
+    username: str
+    role: str
+
+class UserCreate(UserBase):
+    password: str
+
+class UserLogin(BaseModel):
+    username: str
+    password: str
+
+class UserOut(UserBase):
+    id: int
+
+    class Config:
+        from_attributes = True
+
+class User(UserBase):
+    id: int
+
     class Config:
         from_attributes = True 

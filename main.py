@@ -1,15 +1,18 @@
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Form, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import models, schemas
 from database import engine, get_db
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 from s3_config import upload_file_to_s3, delete_file_from_s3
 from dotenv import load_dotenv
 from fastapi.openapi.models import Reference
+from passlib.context import CryptContext
+from jose import JWTError, jwt
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 
 
 
@@ -30,6 +33,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Password hashing
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# JWT settings
+SECRET_KEY = "your-secret-key"  # Change this to a secure secret key
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
 
 @app.get("/")
 def read_root():
@@ -327,4 +352,49 @@ def delete_newsletter(newsletter_id: int, db: Session = Depends(get_db)):
 @app.get("/newsletters/status/{status}", response_model=List[schemas.Newsletter])
 def read_newsletters_by_status(status: str, db: Session = Depends(get_db)):
     newsletters = db.query(models.Newsletter).filter(models.Newsletter.status == status).all()
-    return newsletters 
+    return newsletters
+
+@app.post("/users/", response_model=schemas.User)
+def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+    # Check if username already exists
+    db_user = db.query(models.User).filter(models.User.username == user.username).first()
+    if db_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already registered"
+        )
+    
+    # Create new user
+    hashed_password = get_password_hash(user.password)
+    db_user = models.User(
+        username=user.username,
+        password=hashed_password,
+        role=user.role
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+@app.post("/login/")
+def login(user_data: schemas.UserLogin, db: Session = Depends(get_db)):
+    # Find user
+    user = db.query(models.User).filter(models.User.username == user_data.username).first()
+    if not user or not verify_password(user_data.password, user.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Create access token
+    access_token = create_access_token(
+        data={"sub": user.username, "role": user.role}
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "username": user.username,
+        "role": user.role
+    } 
